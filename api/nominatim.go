@@ -5,10 +5,16 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+
+	"github.com/Miconen/geoguessr-daily-challenge-recap/models"
 )
 
-func GeoGuessrRequest[T any](ncfa string, ep string) (T, error) {
-	var result T
+func GetEndpoint(lat float64, lng float64) string {
+	return fmt.Sprintf("https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=%f&lon=%f&accept-language=en", lat, lng)
+}
+
+func NominatimRequest(ep string) (models.GeoData, error) {
+	var result models.GeoData
 
 	request, err := http.NewRequest("GET", ep, nil)
 	if err != nil {
@@ -16,7 +22,7 @@ func GeoGuessrRequest[T any](ncfa string, ep string) (T, error) {
 		os.Exit(1)
 	}
 
-	request.Header.Set("Cookie", fmt.Sprintf("_ncfa=%s", ncfa))
+	request.Header.Set("User-Agent", "GeoGuessrDailyRecapBot/1.0")
 
 	// Actually execute the request
 	response, err := http.DefaultClient.Do(request)

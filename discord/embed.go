@@ -2,177 +2,221 @@ package discord
 
 import (
 	"fmt"
-	"math"
+	"sort"
 	"strings"
 
 	"github.com/Miconen/geoguessr-daily-challenge-recap/models"
-	"github.com/bwmarrin/discordgo"
 )
 
-func CreateChallengeEmbed(challenge models.Challenge) *discordgo.MessageEmbed {
-	embed := &discordgo.MessageEmbed{
-		Title:       "GeoGuessr Daily Results",
-		URL:         fmt.Sprintf("https://www.geoguessr.com/results/%s", challenge.Token),
-		Description: challenge.Date.Format("02.01.2006"),
-		Color:       0x00ff00,
-		Thumbnail: &discordgo.MessageEmbedThumbnail{
-			URL: "https://play-lh.googleusercontent.com/DboQuoFNkqgfcl5NiLeXsSgUOLo1F_BMe0g9ZBQBFzq5GpX5M1o7LbJeMgocXmbfy8Y",
-		},
-		Footer: &discordgo.MessageEmbedFooter{
-			Text: fmt.Sprintf("👥 %d participants", challenge.Participants),
-		},
+// Simplified Data Structures
+
+type RoundPerformance struct {
+	Round    int
+	Score    int
+	Time     int
+	Distance string
+	Player   string
+}
+
+func createPlayerMap(players []models.ClubPlayer) map[string]models.ClubPlayer {
+	m := make(map[string]models.ClubPlayer)
+	for _, player := range players {
+		m[player.ID] = player
+	}
+	return m
+}
+
+// func GenerateGeoGuessrDailyChallengeEmbed(items []models.Items, challenge models.Challenge, geodata *models.GameGeoData) *discordgo.MessageEmbed {
+func GenerateGeoGuessrDailyChallengeEmbed(items []models.Items, challenge models.Challenge, geodata *models.GameGeoData) string {
+	// Create the lookup map
+	playerLookup := createPlayerMap(challenge.Club)
+
+	// Sort by score descending
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Game.Player.TotalScore.Amount > items[j].Game.Player.TotalScore.Amount
+	})
+
+	bestScoresPerRound := findBestScoresPerRound(items)
+
+	var msg []string
+
+	// Player Breakdowns
+	for i, item := range items {
+		msg = append(msg, fmt.Sprintf("%s\n\n**Rounds:**\n%s", formatPlayerStats(i, item.Game.Player, playerLookup[item.Game.Player.ID]), buildRoundsBreakdown(item.Game.Player, bestScoresPerRound, geodata)))
 	}
 
-	// Find best stats across all club players
-	var bestScore int
-	var bestDistance float64 = math.MaxFloat64
-	var bestTime int = math.MaxInt
+	// Performance Comparisons
+	msg = append(msg, buildPerformanceComparison(items))
 
-	for _, player := range challenge.Club {
-		if player.TotalScore > bestScore {
-			bestScore = player.TotalScore
-		}
-		if player.TotalDistance < bestDistance {
-			bestDistance = player.TotalDistance
-		}
-		if player.TotalTime < bestTime {
-			bestTime = player.TotalTime
+	return strings.Join(msg, "\n")
+}
+
+// --- Reusable Helpers ---
+
+func formatPlayerStats(placement int, p models.Player, cp models.ClubPlayer) string {
+	streak := ""
+	if cp.CurrentStreak > 0 {
+		streak = fmt.Sprintf("• 🔥 %d", cp.CurrentStreak)
+	}
+	return fmt.Sprintf("# %s **%s** :flag_%s: %s\n❯❯ %s pts • %s km • %s",
+		getMedalEmoji(placement), p.Nick, p.CountryCode, streak, p.TotalScore.Amount, p.TotalDistance.Meters.Amount, formatTime(p.TotalTime))
+}
+
+func formatTime(s int) string {
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	return fmt.Sprintf("%dm %ds", s/60, s%60)
+}
+
+func getMedalEmoji(i int) string {
+	emojis := []string{"🥇", "🥈", "🥉"}
+	if i < 3 {
+		return emojis[i]
+	}
+	return fmt.Sprintf("%d.", i+1)
+}
+
+func getNumberEmoji(n int) string {
+	if n >= 1 && n <= 10 {
+		return []string{"1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"}[n-1]
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+func findBestScoresPerRound(items []models.Items) []int {
+	if len(items) == 0 {
+		return nil
+	}
+	best := make([]int, len(items[0].Game.Player.Guesses))
+	for _, item := range items {
+		for i, g := range item.Game.Player.Guesses {
+			if g.RoundScoreInPoints > best[i] {
+				best[i] = g.RoundScoreInPoints
+			}
 		}
 	}
+	return best
+}
 
-	// Add club leaderboard with detailed stats
-	if len(challenge.Club) > 0 {
-		for i, player := range challenge.Club {
-			if i >= 15 { // Reduced to avoid hitting embed limits
-				break
+func buildRoundsBreakdown(Player models.Player, bestScores []int, geodata *models.GameGeoData) string {
+	var res string
+	for i, g := range Player.Guesses {
+		isBest := i < len(bestScores) && g.RoundScoreInPoints == bestScores[i] && g.RoundScoreInPoints > 0
+		star := ""
+		if g.RoundScoreInPoints == 5000 {
+			star = "⭐ "
+		}
+
+		playerMap := make(map[string][]models.GuessGeoData)
+		for _, pgd := range geodata.PlayerGuesses {
+			playerMap[pgd.PlayerID] = pgd.Rounds
+		}
+
+		l := geodata.ActualLocations[i].Location
+		c := playerMap[Player.ID][i].Guess
+
+		loc := fmt.Sprintf(":flag_%s: %s, %s", l.Address.CountryCode, l.Address.Country, l.Address.State)
+		if l.Address.CountryCode != c.Address.CountryCode {
+			loc += fmt.Sprintf(" | :round_pushpin: :flag_%s: %s, %s", c.Address.CountryCode, c.Address.Country, c.Address.State)
+		}
+
+		line := fmt.Sprintf("%s%s %s\n", star, getNumberEmoji(i+1), loc)
+		line += fmt.Sprintf("❯❯ %s pts • %s km • %s", g.RoundScore.Amount, g.Distance.Meters.Amount, formatTime(g.Time))
+
+		if isBest {
+			line = "**" + line + "**"
+		}
+		res += line + "\n"
+	}
+	return res
+}
+
+func buildPerformanceComparison(items []models.Items) string {
+	if len(items) == 0 {
+		return "No data"
+	}
+
+	var (
+		bestScore, worstScore RoundPerformance
+		bestTime, worstTime   RoundPerformance
+		totalTime             int
+		perfects              = make(map[string]int)
+	)
+	worstScore.Score = 5000
+	worstTime.Time = 0
+	bestTime.Time = 9999
+
+	for _, item := range items {
+		p := item.Game.Player
+		totalTime += p.TotalTime
+		if p.TotalTime < bestTime.Time {
+			bestTime.Time, bestTime.Player = p.TotalTime, p.Nick
+		}
+
+		for i, g := range p.Guesses {
+			if g.RoundScoreInPoints >= bestScore.Score {
+				bestScore = RoundPerformance{
+					Round:    i + 1,
+					Score:    g.RoundScoreInPoints,
+					Time:     g.Time,
+					Distance: g.Distance.Meters.Amount,
+					Player:   p.Nick,
+				}
+			}
+			if g.RoundScoreInPoints <= worstScore.Score {
+				worstScore = RoundPerformance{
+					Round:    i + 1,
+					Score:    g.RoundScoreInPoints,
+					Time:     g.Time,
+					Distance: g.Distance.Meters.Amount,
+					Player:   p.Nick,
+				}
+			}
+			if g.Time >= worstTime.Time {
+				worstTime = RoundPerformance{
+					Round:    i + 1,
+					Score:    g.RoundScoreInPoints,
+					Time:     g.Time,
+					Distance: g.Distance.Meters.Amount,
+					Player:   p.Nick,
+				}
+			}
+			if g.Time <= bestTime.Time {
+				bestTime = RoundPerformance{
+					Round:    i + 1,
+					Score:    g.RoundScoreInPoints,
+					Time:     g.Time,
+					Distance: g.Distance.Meters.Amount,
+					Player:   p.Nick,
+				}
 			}
 
-			embed.Fields = append(embed.Fields, createPlayerField(player, i+1, bestScore, bestDistance, bestTime))
+			if g.RoundScoreInPoints == 5000 {
+				perfects[p.Nick]++
+			}
 		}
-	} else {
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name:   "Club Leaderboard",
-			Value:  "No club players yet",
-			Inline: false,
-		})
 	}
 
-	return embed
-}
+	res := ""
 
-func createPlayerField(player models.Player, position int, bestScore int, bestDistance float64, bestTime int) *discordgo.MessageEmbedField {
-	// Position with medals
-	positionStr := fmt.Sprintf("%d.", position)
-	switch position {
-	case 1:
-		positionStr = "🥇"
-	case 2:
-		positionStr = "🥈"
-	case 3:
-		positionStr = "🥉"
+	var scores []string
+	scores = append(scores, fmt.Sprintf("**Best Score:** %s %s %d pts", bestScore.Player, getNumberEmoji(bestScore.Round), bestScore.Score))
+	scores = append(scores, fmt.Sprintf("**Worst Score:** %s %s %d pts\n", worstScore.Player, getNumberEmoji(worstScore.Round), worstScore.Score))
+	res += strings.Join(scores, "\n")
+
+	var times []string
+	times = append(times, fmt.Sprintf("**Fastest Time:** %s %s %s", bestTime.Player, getNumberEmoji(bestTime.Round), formatTime(bestTime.Time)))
+	times = append(times, fmt.Sprintf("**Slowest Time:** %s %s %s\n", worstTime.Player, getNumberEmoji(worstTime.Round), formatTime(worstTime.Time)))
+	res += strings.Join(times, "\n")
+
+	res += "**Perfects:** "
+	if len(perfects) == 0 {
+		res += "None"
+	}
+	for name, count := range perfects {
+		res += fmt.Sprintf("%s: %d ", name, count)
 	}
 
-	// Build player name with badges
-	var badges []string
-	if player.CountryCode != "" {
-		badges = append(badges, fmt.Sprintf(":flag_%s:", strings.ToLower(player.CountryCode)))
-	}
-
-	badgeStr := ""
-	if len(badges) > 0 {
-		badgeStr = " " + strings.Join(badges, " ")
-	}
-
-	name := fmt.Sprintf("%s %s%s", positionStr, player.Nick, badgeStr)
-
-	// Build stats in a more readable format
-	var stats []string
-
-	// Secondary stats
-	var secondaryStats []string
-
-	if player.TotalStepsCount == 0 {
-		secondaryStats = append(secondaryStats, "🚫 **No Move**")
-	} else {
-		secondaryStats = append(secondaryStats, fmt.Sprintf("👣 %d steps", player.TotalStepsCount))
-	}
-
-	if player.CurrentStreak > 0 {
-		secondaryStats = append(secondaryStats, fmt.Sprintf("🔥 %d streak", player.CurrentStreak))
-	}
-
-	if len(secondaryStats) > 0 {
-		stats = append(stats, strings.Join(secondaryStats, "  |  "))
-	}
-
-	// Primary stats on one line with best stat highlighting
-	scoreStr := formatScore(player.TotalScore)
-	if player.TotalScore == bestScore {
-		scoreStr = fmt.Sprintf("**%s**", scoreStr)
-	}
-
-	distanceStr := formatDistance(player.TotalDistance)
-	if player.TotalDistance == bestDistance {
-		distanceStr = fmt.Sprintf("**%s**", distanceStr)
-	}
-
-	timeStr := formatTime(player.TotalTime)
-	if player.TotalTime == bestTime {
-		timeStr = fmt.Sprintf("**%s**", timeStr)
-	}
-
-	primaryStats := fmt.Sprintf("**Score:** %s  •  **Distance:** %s  •  **Time:** %s",
-		scoreStr,
-		distanceStr,
-		timeStr)
-	stats = append(stats, primaryStats)
-
-	return &discordgo.MessageEmbedField{
-		Name:   name,
-		Value:  strings.Join(stats, "\n"),
-		Inline: false,
-	}
-}
-
-func formatScore(score int) string {
-	if score >= 25000 {
-		return fmt.Sprintf("%d 🎯", score)
-	}
-	return fmt.Sprintf("%d", score)
-}
-
-func formatDistance(distance float64) string {
-	km := distance / 1000
-	if km < 1 {
-		return fmt.Sprintf("%.0f m", distance)
-	} else if km < 10 {
-		return fmt.Sprintf("%.2f km", km)
-	} else if km < 100 {
-		return fmt.Sprintf("%.1f km", km)
-	}
-	return fmt.Sprintf("%.0f km", km)
-}
-
-func formatTime(seconds int) string {
-	if seconds < 60 {
-		return fmt.Sprintf("%ds", seconds)
-	}
-
-	minutes := seconds / 60
-	remainingSeconds := seconds % 60
-
-	if minutes < 60 {
-		if remainingSeconds == 0 {
-			return fmt.Sprintf("%dm", minutes)
-		}
-		return fmt.Sprintf("%dm %ds", minutes, remainingSeconds)
-	}
-
-	hours := minutes / 60
-	remainingMinutes := minutes % 60
-
-	if remainingMinutes == 0 {
-		return fmt.Sprintf("%dh", hours)
-	}
-	return fmt.Sprintf("%dh %dm", hours, remainingMinutes)
+	return res
 }
