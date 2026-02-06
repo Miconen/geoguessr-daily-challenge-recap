@@ -3,11 +3,11 @@ package discord
 import (
 	"fmt"
 
-	"github.com/Miconen/geoguessr-daily-challenge-recap/models"
 	"github.com/bwmarrin/discordgo"
 )
 
-func SendDM(botToken string, users []string, challenge models.Challenge) error {
+// func SendDM(botToken string, users []string, embed *discordgo.MessageEmbed) error {
+func SendDM(botToken string, users []string, embed string) error {
 	dg, err := discordgo.New("Bot " + botToken)
 	if err != nil {
 		return fmt.Errorf("error creating Discord session: %w", err)
@@ -27,8 +27,8 @@ func SendDM(botToken string, users []string, challenge models.Challenge) error {
 			continue // Skip this user and continue with others
 		}
 
-		embed := CreateChallengeEmbed(challenge)
-		_, err = dg.ChannelMessageSendEmbed(channel.ID, embed)
+		// _, err = dg.ChannelMessageSendEmbed(channel.ID, embed)
+		_, err = dg.ChannelMessageSend(channel.ID, embed)
 		if err != nil {
 			fmt.Printf("Error sending DM to user %s: %v", user, err)
 			continue
