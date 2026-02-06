@@ -11,7 +11,7 @@ import (
 
 var endpoint = "https://www.geoguessr.com/api/v3/challenges/daily-challenges/today"
 
-func GetDailyChallenge(token string) (models.Challenge, error) {
+func GetDailyChallenge(ncfa string) (models.Challenge, error) {
 	var result models.Challenge
 
 	request, err := http.NewRequest("GET", endpoint, nil)
@@ -20,7 +20,7 @@ func GetDailyChallenge(token string) (models.Challenge, error) {
 		os.Exit(1)
 	}
 
-	request.Header.Set("Cookie", fmt.Sprintf("_ncfa=%s", token))
+	request.Header.Set("Cookie", fmt.Sprintf("_ncfa=%s", ncfa))
 
 	// Actually execute the request
 	response, err := http.DefaultClient.Do(request)
