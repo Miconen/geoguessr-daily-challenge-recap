@@ -1,37 +1,36 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
+
+	"github.com/Miconen/geoguessr-daily-challenge-recap/api"
 )
 
 func main() {
-	friendsFlag := flag.String("friends", "", "friends")
 	tokenFlag := flag.String("token", "", "token")
 
 	flag.Parse()
 
-	if *friendsFlag != "" {
-		os.Setenv("FRIENDS", *friendsFlag)
-	}
 	if *tokenFlag != "" {
 		os.Setenv("TOKEN", *tokenFlag)
 	}
 
-	token := os.Getend("TOKEN")
+	token := os.Getenv("TOKEN")
 	if token == "" {
 		fmt.Fprintf(os.Stderr, "Error getting environment variable: \"TOKEN\"\n")
 		os.Exit(1)
 	}
 
-	friends := os.Getenv("FRIENDS")
-
-	users, err := utils.(group)
+	challenge, err := api.GetDailyChallenge(token)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error fetching name changes: %v\n", err)
 		os.Exit(1)
+	}
+
+	for _, v := range challenge.Club {
+		fmt.Println(v.Nick)
 	}
 
 	os.Exit(0)
