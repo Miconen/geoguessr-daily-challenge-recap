@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 )
@@ -17,6 +18,7 @@ func GeoGuessrRequest[T any](ncfa string, ep string) (T, error) {
 	}
 
 	request.Header.Set("Cookie", fmt.Sprintf("_ncfa=%s", ncfa))
+	request.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 	// Actually execute the request
 	response, err := http.DefaultClient.Do(request)
@@ -27,7 +29,8 @@ func GeoGuessrRequest[T any](ncfa string, ep string) (T, error) {
 
 	// Check status code
 	if response.StatusCode != http.StatusOK {
-		return result, fmt.Errorf("unexpected status code: %d", response.StatusCode)
+		body, _ := io.ReadAll(response.Body)
+		return result, fmt.Errorf("unexpected status code: %d from URL %s (response: %s)", response.StatusCode, ep, string(body))
 	}
 
 	// Decode the JSON response

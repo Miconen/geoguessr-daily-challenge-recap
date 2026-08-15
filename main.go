@@ -46,7 +46,7 @@ func main() {
 	}
 
 	dt := os.Getenv("DISCORD_TOKEN")
-	if ncfa == "" {
+	if dt == "" {
 		fmt.Fprintf(os.Stderr, "Error getting environment variable: \"DISCORD_TOKEN\"\n")
 		os.Exit(1)
 	}
