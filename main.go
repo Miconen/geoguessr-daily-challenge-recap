@@ -17,12 +17,14 @@ var (
 	DiscordToken   string
 	GeoguessrToken string
 	Users          string
+	Date           string
 )
 
 func init() {
 	flag.StringVar(&DiscordToken, "discord", "", "Bot Token")
 	flag.StringVar(&GeoguessrToken, "geoguessr", "", "Geoguessr Token")
 	flag.StringVar(&Users, "users", "", "Discord Users")
+	flag.StringVar(&Date, "date", "", "Challenge date: today (default), yesterday or YYYY-MM-DD")
 	flag.Parse()
 
 	if DiscordToken != "" {
@@ -35,6 +37,10 @@ func init() {
 
 	if Users != "" {
 		os.Setenv("DISCORD_USERS", Users)
+	}
+
+	if Date != "" {
+		os.Setenv("CHALLENGE_DATE", Date)
 	}
 }
 
@@ -53,22 +59,25 @@ func main() {
 
 	users := strings.Split(os.Getenv("DISCORD_USERS"), ",")
 
-	challenge, err := api.GeoGuessrRequest[models.Challenge](ncfa, api.EndpointDaily)
+	now := time.Now()
+	date, err := api.ParseChallengeDate(os.Getenv("CHALLENGE_DATE"), now)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error fetching name changes: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	competition, err := api.GeoGuessrRequest[models.Competition](ncfa, api.GetScoresEndpoint(challenge.Token))
+	challenge, items, err := api.FetchDailyChallenge(ncfa, date, now)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error fetching daily challenge: %v\n", err)
 		os.Exit(1)
 	}
 
-	if len(competition.Items) == 0 {
-		fmt.Fprintf(os.Stderr, "Error fetching games by challenge id: %v\n", err)
+	if len(items) == 0 {
+		fmt.Fprintf(os.Stderr, "No club results found for %s\n", date.Format("2006-01-02"))
 		os.Exit(1)
 	}
+
+	competition := models.Competition{Items: items}
 
 	GeoData := models.GameGeoData{
 		ActualLocations: []models.RoundGeoData{},

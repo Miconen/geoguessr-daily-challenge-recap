@@ -200,3 +200,48 @@ type Game struct {
 type Items struct {
 	Game Game `json:"game"`
 }
+
+// ClubLeaderboard is the response of challenges/daily-challenges/leaderboard/club?dateStr=YYYY-MM-DD.
+type ClubLeaderboard struct {
+	Token        string                 `json:"token"`
+	TotalEntries int                    `json:"totalEntries"`
+	Entries      []ClubLeaderboardEntry `json:"entries"`
+}
+
+type ClubLeaderboardEntry struct {
+	Rank            int     `json:"rank"`
+	UserID          string  `json:"userId"`
+	Nick            string  `json:"nick"`
+	PinURL          string  `json:"pinUrl"`
+	CountryCode     string  `json:"countryCode"`
+	Flair           int     `json:"flair"`
+	CurrentStreak   int     `json:"currentStreak"`
+	TotalScore      int     `json:"totalScore"`
+	TotalDistance   float64 `json:"totalDistance"`
+	TotalTime       int     `json:"totalTime"`
+	TotalStepsCount int     `json:"totalStepsCount"`
+	Medal           string  `json:"medal"`
+	Game            Game    `json:"game"`
+}
+
+// ToChallenge converts the dated club leaderboard into the Challenge + Items shape used by the recap.
+func (lb ClubLeaderboard) ToChallenge(date time.Time) (Challenge, []Items) {
+	challenge := Challenge{Date: date, Token: lb.Token}
+	items := make([]Items, 0, len(lb.Entries))
+	for _, e := range lb.Entries {
+		challenge.Club = append(challenge.Club, ClubPlayer{
+			ID:              e.UserID,
+			Nick:            e.Nick,
+			PinURL:          e.PinURL,
+			TotalScore:      e.TotalScore,
+			TotalTime:       e.TotalTime,
+			TotalDistance:   e.TotalDistance,
+			Flair:           e.Flair,
+			CountryCode:     e.CountryCode,
+			CurrentStreak:   e.CurrentStreak,
+			TotalStepsCount: e.TotalStepsCount,
+		})
+		items = append(items, Items{Game: e.Game})
+	}
+	return challenge, items
+}
