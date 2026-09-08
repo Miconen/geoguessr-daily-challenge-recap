@@ -73,15 +73,8 @@ func GenerateGeoGuessrDailyChallengeEmbed(items []models.Items, challenge models
 		Inline: false,
 	})
 
-	// 2. Round-by-Round Breakdown Field
-	roundsBreakdown := buildRoundByRoundSection(items, geodata)
-	if roundsBreakdown != "" {
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name:   "📍 Round-by-Round Breakdown",
-			Value:  roundsBreakdown,
-			Inline: false,
-		})
-	}
+	// 2. One field per round so each stays under Discord's 1024-char field limit
+	embed.Fields = append(embed.Fields, buildRoundFields(items, geodata)...)
 
 	// 3. Highlights Field
 	highlights := buildPerformanceComparison(items)
@@ -93,7 +86,77 @@ func GenerateGeoGuessrDailyChallengeEmbed(items []models.Items, challenge models
 		})
 	}
 
+	enforceEmbedLimits(embed)
 	return embed
+}
+
+// Discord embed limits: https://discord.com/developers/docs/resources/message#embed-object-embed-limits
+const (
+	maxFieldValueLen = 1024
+	maxFieldNameLen  = 256
+	maxEmbedTotalLen = 6000
+	maxEmbedFields   = 25
+)
+
+// fitLines joins lines with newlines, dropping trailing lines (with a "+N more" note)
+// so the result never exceeds maxLen.
+func fitLines(lines []string, maxLen int) string {
+	full := strings.Join(lines, "\n")
+	if len(full) <= maxLen {
+		return full
+	}
+	for keep := len(lines) - 1; keep > 0; keep-- {
+		note := fmt.Sprintf("*…and %d more*", len(lines)-keep)
+		candidate := strings.Join(append(append([]string{}, lines[:keep]...), note), "\n")
+		if len(candidate) <= maxLen {
+			return candidate
+		}
+	}
+	return truncate(full, maxLen)
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	r := []rune(s)
+	for len(string(r)) > maxLen-1 {
+		r = r[:len(r)-1]
+	}
+	return string(r) + "…"
+}
+
+func embedLength(e *discordgo.MessageEmbed) int {
+	n := len(e.Title) + len(e.Description)
+	if e.Footer != nil {
+		n += len(e.Footer.Text)
+	}
+	if e.Author != nil {
+		n += len(e.Author.Name)
+	}
+	for _, f := range e.Fields {
+		n += len(f.Name) + len(f.Value)
+	}
+	return n
+}
+
+// enforceEmbedLimits clamps field count, field sizes and total embed size.
+// If the total is still too long, fields are dropped from the end (leaderboard is always kept).
+func enforceEmbedLimits(e *discordgo.MessageEmbed) {
+	if len(e.Fields) > maxEmbedFields {
+		e.Fields = e.Fields[:maxEmbedFields]
+	}
+	for _, f := range e.Fields {
+		f.Name = truncate(f.Name, maxFieldNameLen)
+		f.Value = truncate(f.Value, maxFieldValueLen)
+	}
+	for embedLength(e) > maxEmbedTotalLen && len(e.Fields) > 1 {
+		e.Fields = e.Fields[:len(e.Fields)-1]
+	}
+	if embedLength(e) > maxEmbedTotalLen && len(e.Fields) == 1 {
+		over := embedLength(e) - maxEmbedTotalLen
+		e.Fields[0].Value = truncate(e.Fields[0].Value, len(e.Fields[0].Value)-over)
+	}
 }
 
 // buildLeaderboard creates the overall standing overview for all players
@@ -126,7 +189,7 @@ func buildLeaderboard(items []models.Items, playerLookup map[string]models.ClubP
 		)
 		lines = append(lines, line)
 	}
-	return strings.Join(lines, "\n")
+	return fitLines(lines, maxFieldValueLen)
 }
 
 type PlayerRoundStat struct {
@@ -137,10 +200,10 @@ type PlayerRoundStat struct {
 	GuessGeo   models.GeoData
 }
 
-// buildRoundByRoundSection groups players under each round
-func buildRoundByRoundSection(items []models.Items, geodata *models.GameGeoData) string {
+// buildRoundFields returns one embed field per round, each listing every player's guess.
+func buildRoundFields(items []models.Items, geodata *models.GameGeoData) []*discordgo.MessageEmbedField {
 	if len(items) == 0 || geodata == nil {
-		return ""
+		return nil
 	}
 
 	// Map player guesses by player ID
@@ -154,7 +217,7 @@ func buildRoundByRoundSection(items []models.Items, geodata *models.GameGeoData)
 		numRounds = len(items[0].Game.Rounds)
 	}
 
-	var sections []string
+	var fields []*discordgo.MessageEmbedField
 
 	for r := 0; r < numRounds; r++ {
 		var actualLoc models.GeoData
@@ -162,8 +225,10 @@ func buildRoundByRoundSection(items []models.Items, geodata *models.GameGeoData)
 			actualLoc = geodata.ActualLocations[r].Location
 		}
 
+		// Field names can't render custom emoji shortcodes like :flag_xx:, so keep the flag out of the name
+		// and put the location on the first line of the value instead.
+		fieldName := fmt.Sprintf("Round %d", r+1)
 		locTitle := formatLocationTitle(actualLoc)
-		roundHeader := fmt.Sprintf("**R%d:** %s", r+1, locTitle)
 
 		// Collect player stats for this round
 		var roundStats []PlayerRoundStat
@@ -206,11 +271,6 @@ func buildRoundByRoundSection(items []models.Items, geodata *models.GameGeoData)
 
 		var playerLines []string
 		for idx, stat := range roundStats {
-			branch := "├"
-			if idx == len(roundStats)-1 {
-				branch = "└"
-			}
-
 			var medal string
 			if stat.Score == 5000 {
 				medal = "⭐"
@@ -223,15 +283,10 @@ func buildRoundByRoundSection(items []models.Items, geodata *models.GameGeoData)
 			actCountryCode := strings.ToLower(actualLoc.Address.CountryCode)
 			guessCountryCode := strings.ToLower(stat.GuessGeo.Address.CountryCode)
 			if guessCountryCode != "" && actCountryCode != "" && guessCountryCode != actCountryCode {
-				countryName := stat.GuessGeo.Address.Country
-				if countryName == "" {
-					countryName = strings.ToUpper(guessCountryCode)
-				}
-				wrongGuess = fmt.Sprintf(" ⤏ %s *%s*", getFlagEmoji(guessCountryCode), countryName)
+				wrongGuess = fmt.Sprintf(" → %s", getFlagEmoji(guessCountryCode))
 			}
 
-			line := fmt.Sprintf("%s %s **%s:** `%s pts` (%s • %s)%s",
-				branch,
+			line := fmt.Sprintf("%s **%s** `%s` • %s • %s%s",
 				medal,
 				stat.PlayerName,
 				formatNumber(stat.Score),
@@ -242,10 +297,15 @@ func buildRoundByRoundSection(items []models.Items, geodata *models.GameGeoData)
 			playerLines = append(playerLines, line)
 		}
 
-		sections = append(sections, roundHeader+"\n"+strings.Join(playerLines, "\n"))
+		value := fitLines(append([]string{"**" + locTitle + "**"}, playerLines...), maxFieldValueLen)
+		fields = append(fields, &discordgo.MessageEmbedField{
+			Name:   fieldName,
+			Value:  value,
+			Inline: false,
+		})
 	}
 
-	return strings.Join(sections, "\n\n")
+	return fields
 }
 
 func buildPerformanceComparison(items []models.Items) string {
@@ -314,10 +374,11 @@ func buildPerformanceComparison(items []models.Items) string {
 		for name, count := range perfects {
 			perfList = append(perfList, fmt.Sprintf("%s (%d)", name, count))
 		}
+		sort.Strings(perfList)
 		lines = append(lines, fmt.Sprintf("⭐ **5k Perfects:** %s", strings.Join(perfList, ", ")))
 	}
 
-	return strings.Join(lines, "\n")
+	return fitLines(lines, maxFieldValueLen)
 }
 
 // --- Helpers ---

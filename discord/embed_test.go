@@ -1,10 +1,12 @@
 package discord
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/Miconen/geoguessr-daily-challenge-recap/models"
+	"github.com/bwmarrin/discordgo"
 )
 
 func TestGenerateGeoGuessrDailyChallengeEmbed(t *testing.T) {
@@ -21,12 +23,12 @@ func TestGenerateGeoGuessrDailyChallengeEmbed(t *testing.T) {
 		{
 			Game: models.Game{
 				Player: models.Player{
-					ID:          "p1",
-					Nick:        "Mico",
-					CountryCode: "fi",
-					TotalScore:  models.TotalScore{Amount: "23154"},
+					ID:                    "p1",
+					Nick:                  "Mico",
+					CountryCode:           "fi",
+					TotalScore:            models.TotalScore{Amount: "23154"},
 					TotalDistanceInMeters: 608400,
-					TotalTime:   268,
+					TotalTime:             268,
 					Guesses: []models.Guesses{
 						{RoundScoreInPoints: 4997, DistanceInMeters: 12000, Time: 180},
 						{RoundScoreInPoints: 5000, DistanceInMeters: 14, Time: 36},
@@ -40,12 +42,12 @@ func TestGenerateGeoGuessrDailyChallengeEmbed(t *testing.T) {
 		{
 			Game: models.Game{
 				Player: models.Player{
-					ID:          "p2",
-					Nick:        "Cerkie",
-					CountryCode: "dk",
-					TotalScore:  models.TotalScore{Amount: "21488"},
+					ID:                    "p2",
+					Nick:                  "Cerkie",
+					CountryCode:           "dk",
+					TotalScore:            models.TotalScore{Amount: "21488"},
 					TotalDistanceInMeters: 1272000,
-					TotalTime:   480,
+					TotalTime:             480,
 					Guesses: []models.Guesses{
 						{RoundScoreInPoints: 4986, DistanceInMeters: 18000, Time: 180},
 						{RoundScoreInPoints: 5000, DistanceInMeters: 42, Time: 154},
@@ -59,12 +61,12 @@ func TestGenerateGeoGuessrDailyChallengeEmbed(t *testing.T) {
 		{
 			Game: models.Game{
 				Player: models.Player{
-					ID:          "p3",
-					Nick:        "Anna",
-					CountryCode: "se",
-					TotalScore:  models.TotalScore{Amount: "19850"},
+					ID:                    "p3",
+					Nick:                  "Anna",
+					CountryCode:           "se",
+					TotalScore:            models.TotalScore{Amount: "19850"},
 					TotalDistanceInMeters: 2410000,
-					TotalTime:   375,
+					TotalTime:             375,
 					Guesses: []models.Guesses{
 						{RoundScoreInPoints: 4810, DistanceInMeters: 54000, Time: 100},
 						{RoundScoreInPoints: 4992, DistanceInMeters: 110, Time: 75},
@@ -105,11 +107,66 @@ func TestGenerateGeoGuessrDailyChallengeEmbed(t *testing.T) {
 		t.Fatal("expected embed to be non-nil")
 	}
 
-	if len(embed.Fields) < 3 {
-		t.Fatalf("expected at least 3 fields (Leaderboard, Rounds, Highlights), got %d", len(embed.Fields))
+	if len(embed.Fields) != 7 {
+		t.Fatalf("expected 7 fields (Leaderboard, 5 rounds, Highlights), got %d", len(embed.Fields))
 	}
+
+	assertEmbedLimits(t, embed)
 
 	for _, field := range embed.Fields {
 		t.Logf("\n--- %s ---\n%s\n", field.Name, field.Value)
+	}
+}
+
+// TestEmbedLimitsWithManyPlayers reproduces the production 400 "Must be 1024 or fewer in length"
+// by generating a full 26-player club and checking every Discord embed limit.
+func TestEmbedLimitsWithManyPlayers(t *testing.T) {
+	const players = 26
+	challenge := models.Challenge{Date: time.Now()}
+	var items []models.Items
+	var guesses []models.PlayerGeoData
+	for i := 0; i < players; i++ {
+		id := fmt.Sprintf("p%02d", i)
+		nick := fmt.Sprintf("PlayerWithALongName%02d", i)
+		challenge.Club = append(challenge.Club, models.ClubPlayer{ID: id, Nick: nick, CurrentStreak: 100 + i})
+		var gs []models.Guesses
+		var geo []models.GuessGeoData
+		for r := 0; r < 5; r++ {
+			gs = append(gs, models.Guesses{RoundScoreInPoints: 4000 + i*10 + r, DistanceInMeters: 123456, Time: 125})
+			geo = append(geo, models.GuessGeoData{RoundNumber: r + 1, Guess: models.GeoData{Address: models.Address{Country: "Brazil", CountryCode: "br"}}})
+		}
+		items = append(items, models.Items{Game: models.Game{Player: models.Player{
+			ID: id, Nick: nick, CountryCode: "fi",
+			TotalScore:            models.TotalScore{Amount: "20000"},
+			TotalDistanceInMeters: 1234567, TotalTime: 3600, Guesses: gs,
+		}}})
+		guesses = append(guesses, models.PlayerGeoData{PlayerID: id, Rounds: geo})
+	}
+	geodata := &models.GameGeoData{PlayerGuesses: guesses}
+	for r := 0; r < 5; r++ {
+		geodata.ActualLocations = append(geodata.ActualLocations, models.RoundGeoData{
+			Location: models.GeoData{Address: models.Address{Country: "United Arab Emirates", State: "Sharjah Emirate", CountryCode: "ae"}},
+		})
+	}
+
+	embed := GenerateGeoGuessrDailyChallengeEmbed(items, challenge, geodata)
+	assertEmbedLimits(t, embed)
+}
+
+func assertEmbedLimits(t *testing.T, embed *discordgo.MessageEmbed) {
+	t.Helper()
+	if len(embed.Fields) > maxEmbedFields {
+		t.Errorf("too many fields: %d", len(embed.Fields))
+	}
+	for _, f := range embed.Fields {
+		if len(f.Name) > maxFieldNameLen {
+			t.Errorf("field name %q exceeds %d chars (%d)", f.Name, maxFieldNameLen, len(f.Name))
+		}
+		if len(f.Value) > maxFieldValueLen {
+			t.Errorf("field %q value exceeds %d chars (%d)", f.Name, maxFieldValueLen, len(f.Value))
+		}
+	}
+	if total := embedLength(embed); total > maxEmbedTotalLen {
+		t.Errorf("embed total length %d exceeds %d", total, maxEmbedTotalLen)
 	}
 }
