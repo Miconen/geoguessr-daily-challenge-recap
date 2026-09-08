@@ -435,13 +435,9 @@ func formatTime(s int) string {
 	return fmt.Sprintf("%dm %02ds", s/60, s%60)
 }
 
-// getMedalEmoji returns 🥇🥈🥉 for the podium and keycap digits (4️⃣, 5️⃣, 1️⃣0️⃣ …) below it.
-// Keycap emojis render at the same width as the medals, so lines stay aligned.
+// getMedalEmoji returns the rank as keycap digits (1️⃣, 2️⃣, …, 1️⃣0️⃣).
+// Keycap emojis all render at the same width, so lines stay aligned.
 func getMedalEmoji(i int) string {
-	emojis := []string{"🥇", "🥈", "🥉"}
-	if i >= 0 && i < len(emojis) {
-		return emojis[i]
-	}
 	var b strings.Builder
 	for _, d := range strconv.Itoa(i + 1) {
 		b.WriteRune(d)
