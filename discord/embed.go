@@ -39,16 +39,6 @@ func GenerateGeoGuessrDailyChallengeEmbed(items []models.Items, challenge models
 
 	playerLookup := createPlayerMap(challenge.Club)
 
-	// Sort players by total score descending, then by total time ascending as tiebreaker
-	sort.Slice(items, func(i, j int) bool {
-		scoreI := parseScore(items[i].Game.Player.TotalScore.Amount)
-		scoreJ := parseScore(items[j].Game.Player.TotalScore.Amount)
-		if scoreI != scoreJ {
-			return scoreI > scoreJ
-		}
-		return items[i].Game.Player.TotalTime < items[j].Game.Player.TotalTime
-	})
-
 	var dateStr string
 	if !challenge.Date.IsZero() {
 		dateStr = challenge.Date.Format("Jan 02, 2006")
@@ -159,10 +149,10 @@ func enforceEmbedLimits(e *discordgo.MessageEmbed) {
 	}
 }
 
-// buildLeaderboard creates the overall standing overview for all players
+// buildLeaderboard creates the overall standing overview, in GeoGuessr's rank order.
 func buildLeaderboard(items []models.Items, playerLookup map[string]models.ClubPlayer) string {
 	var lines []string
-	for i, item := range items {
+	for _, item := range items {
 		p := item.Game.Player
 		cp := playerLookup[p.ID]
 
@@ -172,18 +162,13 @@ func buildLeaderboard(items []models.Items, playerLookup map[string]models.ClubP
 		}
 
 		flag := getFlagEmoji(p.CountryCode)
-		totalScore := parseScore(p.TotalScore.Amount)
-		distMeters := p.TotalDistanceInMeters
-		if distMeters == 0 {
-			distMeters = parseDistance(p.TotalDistance.Meters.Amount)
-		}
 
 		line := fmt.Sprintf("%s **%s** %s `%s pts` • `%s` • `%s`%s",
-			getMedalEmoji(i),
+			getRankEmoji(cp.Rank),
 			p.Nick,
 			flag,
-			formatNumber(totalScore),
-			formatDistance(distMeters),
+			formatNumber(p.TotalScoreInPoints),
+			formatDistance(p.TotalDistanceInMeters),
 			formatTime(p.TotalTime),
 			streak,
 		)
@@ -197,6 +182,7 @@ type PlayerRoundStat struct {
 	Score      int
 	Time       int
 	Distance   float64
+	Guess      models.Guesses
 	GuessGeo   models.GeoData
 }
 
@@ -224,11 +210,17 @@ func buildRoundFields(items []models.Items, geodata *models.GameGeoData) []*disc
 		if r < len(geodata.ActualLocations) {
 			actualLoc = geodata.ActualLocations[r].Location
 		}
+		// GeoGuessr's own country for the round; Nominatim only as fallback.
+		actualCode := actualLoc.Address.CountryCode
+		if r < len(items[0].Game.Rounds) && items[0].Game.Rounds[r].Region.Country != "" {
+			actualCode = items[0].Game.Rounds[r].Region.Country
+		}
+		actualCode = strings.ToLower(actualCode)
 
 		// Field names can't render custom emoji shortcodes like :flag_xx:, so keep the flag out of the name
 		// and put the location on the first line of the value instead.
 		fieldName := fmt.Sprintf("Round %d", r+1)
-		locTitle := formatLocationTitle(actualLoc)
+		locTitle := formatLocationTitle(actualLoc, actualCode)
 
 		// Collect player stats for this round
 		var roundStats []PlayerRoundStat
@@ -239,13 +231,7 @@ func buildRoundFields(items []models.Items, geodata *models.GameGeoData) []*disc
 			}
 			g := p.Guesses[r]
 			dist := g.DistanceInMeters
-			if dist == 0 {
-				dist = parseDistance(g.Distance.Meters.Amount)
-			}
 			score := g.RoundScoreInPoints
-			if score == 0 {
-				score = parseScore(g.RoundScore.Amount)
-			}
 
 			var guessGeo models.GeoData
 			if pRounds, ok := playerGuessMap[p.ID]; ok && r < len(pRounds) {
@@ -257,6 +243,7 @@ func buildRoundFields(items []models.Items, geodata *models.GameGeoData) []*disc
 				Score:      score,
 				Time:       g.Time,
 				Distance:   dist,
+				Guess:      g,
 				GuessGeo:   guessGeo,
 			})
 		}
@@ -275,15 +262,12 @@ func buildRoundFields(items []models.Items, geodata *models.GameGeoData) []*disc
 			if stat.Score == 5000 {
 				medal = "⭐"
 			} else {
-				medal = getMedalEmoji(idx)
+				medal = getRankEmoji(idx + 1)
 			}
 
-			// Check wrong country guess
 			wrongGuess := ""
-			actCountryCode := strings.ToLower(actualLoc.Address.CountryCode)
-			guessCountryCode := strings.ToLower(stat.GuessGeo.Address.CountryCode)
-			if guessCountryCode != "" && actCountryCode != "" && guessCountryCode != actCountryCode {
-				wrongGuess = fmt.Sprintf(" → %s", getFlagEmoji(guessCountryCode))
+			if code := wrongCountryCode(stat.Guess, stat.GuessGeo, actualCode); code != "" {
+				wrongGuess = fmt.Sprintf(" → %s", getFlagEmoji(code))
 			}
 
 			line := fmt.Sprintf("%s **%s** `%s` • %s • %s%s",
@@ -328,13 +312,7 @@ func buildPerformanceComparison(items []models.Items) string {
 		p := item.Game.Player
 		for i, g := range p.Guesses {
 			score := g.RoundScoreInPoints
-			if score == 0 {
-				score = parseScore(g.RoundScore.Amount)
-			}
 			dist := g.DistanceInMeters
-			if dist == 0 {
-				dist = parseDistance(g.Distance.Meters.Amount)
-			}
 
 			if score > bestScore.Score {
 				bestScore = RoundPerformance{Round: i + 1, Score: score, Time: g.Time, Distance: dist, Player: p.Nick}
@@ -383,8 +361,29 @@ func buildPerformanceComparison(items []models.Items) string {
 
 // --- Helpers ---
 
-func formatLocationTitle(geo models.GeoData) string {
-	flag := getFlagEmoji(geo.Address.CountryCode)
+// wrongCountryCode returns the country a wrong guess landed in, or "" when the guess was right
+// or the guessed country is unknown. GeoGuessr's country bonus decides right vs wrong; the
+// Nominatim comparison is only a fallback for responses without it.
+func wrongCountryCode(g models.Guesses, guessGeo models.GeoData, actualCode string) string {
+	guessCode := strings.ToLower(guessGeo.Address.CountryCode)
+	if guessCode == "" || guessCode == actualCode {
+		return ""
+	}
+	if correct, ok := g.CountryCorrect(); ok {
+		if correct {
+			return ""
+		}
+		return guessCode
+	}
+	if actualCode == "" {
+		return ""
+	}
+	return guessCode
+}
+
+// formatLocationTitle renders "flag Country, State"; countryCode comes from the API, names from Nominatim.
+func formatLocationTitle(geo models.GeoData, countryCode string) string {
+	flag := getFlagEmoji(countryCode)
 	country := geo.Address.Country
 	state := geo.Address.State
 	if state == "" {
@@ -395,6 +394,9 @@ func formatLocationTitle(geo models.GeoData) string {
 	}
 
 	if country == "" && state == "" {
+		if countryCode != "" {
+			return fmt.Sprintf("%s %s", flag, strings.ToUpper(countryCode))
+		}
 		return "Unknown Location"
 	}
 	if state != "" && country != "" {
@@ -435,35 +437,15 @@ func formatTime(s int) string {
 	return fmt.Sprintf("%dm %02ds", s/60, s%60)
 }
 
-// getMedalEmoji returns the rank as keycap digits (1️⃣, 2️⃣, …, 1️⃣0️⃣).
+// getRankEmoji returns the rank as keycap digits (1️⃣, 2️⃣, …, 1️⃣0️⃣).
 // Keycap emojis all render at the same width, so lines stay aligned.
-func getMedalEmoji(i int) string {
+func getRankEmoji(rank int) string {
 	var b strings.Builder
-	for _, d := range strconv.Itoa(i + 1) {
+	for _, d := range strconv.Itoa(rank) {
 		b.WriteRune(d)
 		b.WriteString("\uFE0F\u20E3") // variation selector + combining keycap
 	}
 	return b.String()
-}
-
-func parseScore(s string) int {
-	s = strings.ReplaceAll(s, ",", "")
-	s = strings.TrimSpace(s)
-	v, err := strconv.Atoi(s)
-	if err != nil {
-		return 0
-	}
-	return v
-}
-
-func parseDistance(s string) float64 {
-	s = strings.ReplaceAll(s, ",", "")
-	s = strings.TrimSpace(s)
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0
-	}
-	return v
 }
 
 func formatNumber(n int) string {

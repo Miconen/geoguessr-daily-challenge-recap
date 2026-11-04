@@ -3,14 +3,13 @@ package models
 import "time"
 
 type ClubPlayer struct {
+	Rank            int
 	ID              string  `json:"id"`
 	Nick            string  `json:"nick"`
 	PinURL          string  `json:"pinUrl"`
 	TotalScore      int     `json:"totalScore"`
 	TotalTime       int     `json:"totalTime"`
 	TotalDistance   float64 `json:"totalDistance"`
-	IsOnLeaderboard bool    `json:"isOnLeaderboard"`
-	IsVerified      bool    `json:"isVerified"`
 	Flair           int     `json:"flair"`
 	CountryCode     string  `json:"countryCode"`
 	CurrentStreak   int     `json:"currentStreak"`
@@ -18,16 +17,9 @@ type ClubPlayer struct {
 }
 
 type Challenge struct {
-	Date         time.Time    `json:"date"`
-	Description  string       `json:"description"`
-	Participants int          `json:"participants"`
-	Token        string       `json:"token"`
-	Club         []ClubPlayer `json:"club"`
-}
-
-type Competition struct {
-	Items           []Items `json:"items"`
-	PaginationToken string  `json:"paginationToken"`
+	Date  time.Time
+	Token string
+	Club  []ClubPlayer
 }
 
 type Min struct {
@@ -54,54 +46,45 @@ type Rounds struct {
 	Zoom               int       `json:"zoom"`
 	StreakLocationCode string    `json:"streakLocationCode"`
 	StartTime          time.Time `json:"startTime"`
+	Region             Region    `json:"region"`
 }
 
-type TotalScore struct {
-	Amount     string  `json:"amount"`
-	Unit       string  `json:"unit"`
-	Percentage float64 `json:"percentage"`
-}
-
-type Meters struct {
-	Amount string `json:"amount"`
-	Unit   string `json:"unit"`
-}
-
-type Miles struct {
-	Amount string `json:"amount"`
-	Unit   string `json:"unit"`
-}
-
-type TotalDistance struct {
-	Meters Meters `json:"meters"`
-	Miles  Miles  `json:"miles"`
-}
-
-type RoundScore struct {
-	Amount     string  `json:"amount"`
-	Unit       string  `json:"unit"`
-	Percentage float64 `json:"percentage"`
-}
-
-type Distance struct {
-	Meters Meters `json:"meters"`
-	Miles  Miles  `json:"miles"`
+// Region is GeoGuessr's own classification of a round location.
+type Region struct {
+	Country    string `json:"country"`
+	Continent  string `json:"continent"`
+	Hemisphere string `json:"hemisphere"`
 }
 
 type Guesses struct {
-	Lat                    float64    `json:"lat"`
-	Lng                    float64    `json:"lng"`
-	TimedOut               bool       `json:"timedOut"`
-	TimedOutWithGuess      bool       `json:"timedOutWithGuess"`
-	SkippedRound           bool       `json:"skippedRound"`
-	RoundScore             RoundScore `json:"roundScore"`
-	RoundScoreInPercentage float64    `json:"roundScoreInPercentage"`
-	RoundScoreInPoints     int        `json:"roundScoreInPoints"`
-	Distance               Distance   `json:"distance"`
-	DistanceInMeters       float64    `json:"distanceInMeters"`
-	StepsCount             int        `json:"stepsCount"`
-	StreakLocationCode     string     `json:"streakLocationCode"`
-	Time                   int        `json:"time"`
+	Lat                    float64            `json:"lat"`
+	Lng                    float64            `json:"lng"`
+	TimedOut               bool               `json:"timedOut"`
+	TimedOutWithGuess      bool               `json:"timedOutWithGuess"`
+	SkippedRound           bool               `json:"skippedRound"`
+	RoundScoreInPercentage float64            `json:"roundScoreInPercentage"`
+	RoundScoreInPoints     int                `json:"roundScoreInPoints"`
+	DistanceInMeters       float64            `json:"distanceInMeters"`
+	StepsCount             int                `json:"stepsCount"`
+	StreakLocationCode     string             `json:"streakLocationCode"`
+	Time                   int                `json:"time"`
+	RegionGuessBonuses     []RegionGuessBonus `json:"regionGuessBonuses"`
+}
+
+type RegionGuessBonus struct {
+	Region  string `json:"region"`
+	Correct bool   `json:"correct"`
+}
+
+// CountryCorrect returns GeoGuessr's verdict on whether the guess was in the right country.
+// ok is false when the response carries no country bonus.
+func (g Guesses) CountryCorrect() (correct, ok bool) {
+	for _, b := range g.RegionGuessBonuses {
+		if b.Region == "Country" {
+			return b.Correct, true
+		}
+	}
+	return false, false
 }
 
 type Pin struct {
@@ -111,23 +94,22 @@ type Pin struct {
 }
 
 type Player struct {
-	TotalScore            TotalScore    `json:"totalScore"`
-	TotalDistance         TotalDistance `json:"totalDistance"`
-	TotalDistanceInMeters float64       `json:"totalDistanceInMeters"`
-	TotalStepsCount       int           `json:"totalStepsCount"`
-	TotalTime             int           `json:"totalTime"`
-	TotalStreak           int           `json:"totalStreak"`
-	Guesses               []Guesses     `json:"guesses"`
-	IsLeader              bool          `json:"isLeader"`
-	CurrentPosition       int           `json:"currentPosition"`
-	Pin                   Pin           `json:"pin"`
-	NewBadges             []string      `json:"newBadges"`
-	Explorer              string        `json:"explorer"`
-	ID                    string        `json:"id"`
-	Nick                  string        `json:"nick"`
-	IsVerified            bool          `json:"isVerified"`
-	Flair                 int           `json:"flair"`
-	CountryCode           string        `json:"countryCode"`
+	TotalScoreInPoints    int       `json:"totalScoreInPoints"`
+	TotalDistanceInMeters float64   `json:"totalDistanceInMeters"`
+	TotalStepsCount       int       `json:"totalStepsCount"`
+	TotalTime             int       `json:"totalTime"`
+	TotalStreak           int       `json:"totalStreak"`
+	Guesses               []Guesses `json:"guesses"`
+	IsLeader              bool      `json:"isLeader"`
+	CurrentPosition       int       `json:"currentPosition"`
+	Pin                   Pin       `json:"pin"`
+	NewBadges             []string  `json:"newBadges"`
+	Explorer              string    `json:"explorer"`
+	ID                    string    `json:"id"`
+	Nick                  string    `json:"nick"`
+	IsVerified            bool      `json:"isVerified"`
+	Flair                 int       `json:"flair"`
+	CountryCode           string    `json:"countryCode"`
 }
 
 type CurrentLevel struct {
@@ -230,6 +212,7 @@ func (lb ClubLeaderboard) ToChallenge(date time.Time) (Challenge, []Items) {
 	items := make([]Items, 0, len(lb.Entries))
 	for _, e := range lb.Entries {
 		challenge.Club = append(challenge.Club, ClubPlayer{
+			Rank:            e.Rank,
 			ID:              e.UserID,
 			Nick:            e.Nick,
 			PinURL:          e.PinURL,

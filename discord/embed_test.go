@@ -13,9 +13,9 @@ func TestGenerateGeoGuessrDailyChallengeEmbed(t *testing.T) {
 	challenge := models.Challenge{
 		Date: time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC),
 		Club: []models.ClubPlayer{
-			{ID: "p1", Nick: "Mico", CurrentStreak: 44},
-			{ID: "p2", Nick: "Cerkie", CurrentStreak: 54},
-			{ID: "p3", Nick: "Anna", CurrentStreak: 12},
+			{Rank: 1, ID: "p1", Nick: "Mico", CurrentStreak: 44},
+			{Rank: 2, ID: "p2", Nick: "Cerkie", CurrentStreak: 54},
+			{Rank: 3, ID: "p3", Nick: "Anna", CurrentStreak: 12},
 		},
 	}
 
@@ -26,7 +26,7 @@ func TestGenerateGeoGuessrDailyChallengeEmbed(t *testing.T) {
 					ID:                    "p1",
 					Nick:                  "Mico",
 					CountryCode:           "fi",
-					TotalScore:            models.TotalScore{Amount: "23154"},
+					TotalScoreInPoints:    23154,
 					TotalDistanceInMeters: 608400,
 					TotalTime:             268,
 					Guesses: []models.Guesses{
@@ -45,7 +45,7 @@ func TestGenerateGeoGuessrDailyChallengeEmbed(t *testing.T) {
 					ID:                    "p2",
 					Nick:                  "Cerkie",
 					CountryCode:           "dk",
-					TotalScore:            models.TotalScore{Amount: "21488"},
+					TotalScoreInPoints:    21488,
 					TotalDistanceInMeters: 1272000,
 					TotalTime:             480,
 					Guesses: []models.Guesses{
@@ -64,7 +64,7 @@ func TestGenerateGeoGuessrDailyChallengeEmbed(t *testing.T) {
 					ID:                    "p3",
 					Nick:                  "Anna",
 					CountryCode:           "se",
-					TotalScore:            models.TotalScore{Amount: "19850"},
+					TotalScoreInPoints:    19850,
 					TotalDistanceInMeters: 2410000,
 					TotalTime:             375,
 					Guesses: []models.Guesses{
@@ -128,7 +128,7 @@ func TestEmbedLimitsWithManyPlayers(t *testing.T) {
 	for i := 0; i < players; i++ {
 		id := fmt.Sprintf("p%02d", i)
 		nick := fmt.Sprintf("PlayerWithALongName%02d", i)
-		challenge.Club = append(challenge.Club, models.ClubPlayer{ID: id, Nick: nick, CurrentStreak: 100 + i})
+		challenge.Club = append(challenge.Club, models.ClubPlayer{Rank: i + 1, ID: id, Nick: nick, CurrentStreak: 100 + i})
 		var gs []models.Guesses
 		var geo []models.GuessGeoData
 		for r := 0; r < 5; r++ {
@@ -137,7 +137,7 @@ func TestEmbedLimitsWithManyPlayers(t *testing.T) {
 		}
 		items = append(items, models.Items{Game: models.Game{Player: models.Player{
 			ID: id, Nick: nick, CountryCode: "fi",
-			TotalScore:            models.TotalScore{Amount: "20000"},
+			TotalScoreInPoints:    20000,
 			TotalDistanceInMeters: 1234567, TotalTime: 3600, Guesses: gs,
 		}}})
 		guesses = append(guesses, models.PlayerGeoData{PlayerID: id, Rounds: geo})
@@ -168,5 +168,35 @@ func assertEmbedLimits(t *testing.T, embed *discordgo.MessageEmbed) {
 	}
 	if total := embedLength(embed); total > maxEmbedTotalLen {
 		t.Errorf("embed total length %d exceeds %d", total, maxEmbedTotalLen)
+	}
+}
+
+func TestWrongCountryCode(t *testing.T) {
+	bonus := func(correct bool) models.Guesses {
+		return models.Guesses{RegionGuessBonuses: []models.RegionGuessBonus{{Region: "Country", Correct: correct}}}
+	}
+	geo := func(code string) models.GeoData { return models.GeoData{Address: models.Address{CountryCode: code}} }
+
+	tests := []struct {
+		name   string
+		guess  models.Guesses
+		geo    models.GeoData
+		actual string
+		want   string
+	}{
+		{"API wrong", bonus(false), geo("IN"), "lk", "in"},
+		{"API wrong, no actual code", bonus(false), geo("in"), "", "in"},
+		{"API correct overrides Nominatim border mismatch", bonus(true), geo("in"), "lk", ""},
+		{"API wrong but Nominatim agrees with actual", bonus(false), geo("lk"), "lk", ""},
+		{"API wrong, guess not looked up", bonus(false), geo(""), "lk", ""},
+		{"no bonus, fallback compare", models.Guesses{}, geo("ke"), "gh", "ke"},
+		{"no bonus, same country", models.Guesses{}, geo("gh"), "gh", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := wrongCountryCode(tt.guess, tt.geo, tt.actual); got != tt.want {
+				t.Errorf("wrongCountryCode() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

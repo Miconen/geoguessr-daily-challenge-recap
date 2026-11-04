@@ -59,14 +59,13 @@ func main() {
 
 	users := strings.Split(os.Getenv("DISCORD_USERS"), ",")
 
-	now := time.Now()
-	date, err := api.ParseChallengeDate(os.Getenv("CHALLENGE_DATE"), now)
+	date, err := api.ParseChallengeDate(os.Getenv("CHALLENGE_DATE"), time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	challenge, items, err := api.FetchDailyChallenge(ncfa, date, now)
+	challenge, items, err := api.FetchDailyChallenge(ncfa, date)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error fetching daily challenge: %v\n", err)
 		os.Exit(1)
@@ -77,37 +76,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	competition := models.Competition{Items: items}
-
 	GeoData := models.GameGeoData{
 		ActualLocations: []models.RoundGeoData{},
 		PlayerGuesses:   []models.PlayerGeoData{},
 	}
 
-	// 1. Process Actual Locations (Only once from the first player)
-	for i, round := range competition.Items[0].Game.Rounds {
-		// These are the "Correct" answers
-		ep := api.GetEndpoint(round.Lat, round.Lng)
-
-		location, err := api.NominatimRequest(ep)
+	// 1. Process Actual Locations (Only once from the first player). Nominatim is only
+	// needed for the country/state names in the round titles; the flag comes from the API.
+	// Every round keeps its slot, even on failure, so indexes stay aligned with rounds.
+	for i, round := range items[0].Game.Rounds {
+		data := models.RoundGeoData{RoundNumber: strconv.Itoa(i + 1)}
+		location, err := api.NominatimRequest(api.GetEndpoint(round.Lat, round.Lng))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error fetching actual location R%d: %v\n", i+1, err)
-			continue
-		}
-
-		// Store in your GeoData.ActualLocations slice
-		fmt.Printf("Round %d is in: %s\n", i+1, location.Address.Country)
-		data := models.RoundGeoData{
-			RoundNumber: strconv.Itoa(i + 1),
-			Location:    location,
+		} else {
+			fmt.Printf("Round %d is in: %s\n", i+1, location.Address.Country)
+			data.Location = location
 		}
 		GeoData.ActualLocations = append(GeoData.ActualLocations, data)
 
 		time.Sleep(time.Second)
 	}
 
-	// 2. Process Player Guesses
-	for _, item := range competition.Items {
+	// 2. Process Player Guesses. GeoGuessr decides whether a guess was in the right country;
+	// Nominatim is only asked which country a wrong guess landed in.
+	for _, item := range items {
 		fmt.Printf("Processing guesses for: %s\n", item.Game.Player.Nick)
 		player := models.PlayerGeoData{
 			PlayerID: item.Game.Player.ID,
@@ -115,29 +108,27 @@ func main() {
 		}
 
 		for i, guess := range item.Game.Player.Guesses {
-			// These are the coordinates where the player clicked
-			ep := api.GetEndpoint(guess.Lat, guess.Lng)
-
-			location, err := api.NominatimRequest(ep)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error fetching guess %d for %s: %v\n", i+1, item.Game.Player.Nick, err)
+			data := models.GuessGeoData{RoundNumber: i + 1}
+			if correct, ok := guess.CountryCorrect(); ok && correct {
+				player.Rounds = append(player.Rounds, data)
 				continue
 			}
 
-			// Store in your GeoData.PlayerGuesses
-			fmt.Printf("  - Guess %d: %s\n", i+1, location.Address.Country)
-			guess := models.GuessGeoData{
-				RoundNumber: i + 1,
-				Guess:       location,
+			location, err := api.NominatimRequest(api.GetEndpoint(guess.Lat, guess.Lng))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error fetching guess %d for %s: %v\n", i+1, item.Game.Player.Nick, err)
+			} else {
+				fmt.Printf("  - Guess %d: %s\n", i+1, location.Address.Country)
+				data.Guess = location
 			}
-			player.Rounds = append(player.Rounds, guess)
+			player.Rounds = append(player.Rounds, data)
 
 			time.Sleep(time.Second)
 		}
 		GeoData.PlayerGuesses = append(GeoData.PlayerGuesses, player)
 	}
 
-	embed := discord.GenerateGeoGuessrDailyChallengeEmbed(competition.Items, challenge, &GeoData)
+	embed := discord.GenerateGeoGuessrDailyChallengeEmbed(items, challenge, &GeoData)
 
 	err = discord.SendDM(dt, users, embed)
 	if err != nil {

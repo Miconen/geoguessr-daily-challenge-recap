@@ -22,7 +22,7 @@ If a run failed or was skipped, you can re-send the recap for an earlier challen
 
 `go run main.go -date yesterday` or `go run main.go -date 2026-09-06`
 
-Past days are fetched from the club leaderboard endpoint, so only club members' results are included.
+All days, including today, are fetched from the club leaderboard endpoint, so only club members' results are included.
 
 ## Results
 Once setup, the application will output your GeoGuessr club members current placements on the daily challenge.
